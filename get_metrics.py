@@ -1,12 +1,30 @@
 import sys
 import os
-sys.path.insert(1, './../datasets')
+sys.path.insert(1, './datasets')
+sys.path.insert(1, './TMPI')
 from spaces_dataset.code import utils
+from DP import dp_utils
 from spaces_dataset import get_scene_list
+import torch
+from tqdm import tqdm
 
 import metric_utils
 
 from parallax_inpainting_new import ParallaxInpainting
+from depth_inference import midas_inference, dimas_inference
+# from TMPI import utils, tmpi
+# from TMPI.tmpi_renderer_gl import TMPIRendererGL
+
+def get_dualpixels_dataset_infos(data_path):
+    scenes_images_path = os.path.join(data_path,'scaled_images')
+    scenes_list  = get_scene_list( scenes_images_path)
+    data_infos_list = []
+    for scene in scenes_list:
+        params_path = os.path.join(data_path,'scaled_camera_pose_txt')
+        scene_path = os.path.join(params_path,scene)
+        views, model_json = dp_utils.ReadScene( scene_path, scene)
+        data_infos_list.append((views, model_json,scene_path,scene))
+    return data_infos_list
 
 def get_spaces_dataset_infos(data_path):
     scenes_list  = get_scene_list( data_path)
@@ -22,7 +40,7 @@ def compute_dqmesh_results(
         frames_output_path,
         gts_resized_path,
         pipeline_params,
-        dataset_name='spaces',
+        dataset_name='dualpixels',
         save_mesh_path=None
 ):
     depth_max_dim = pipeline_params['d_max_dim'] # 640
@@ -32,18 +50,32 @@ def compute_dqmesh_results(
 
     if dataset_name == 'spaces':
         data_infos_list = get_spaces_dataset_infos(data_path)
-    for scene_infos in data_infos_list:
+    else:
+        data_infos_list = get_dualpixels_dataset_infos(data_path)
+    for scene_infos in tqdm(data_infos_list[:20]):
         
         cameras, scene_params, scene_path, scene_name = scene_infos
-        
-        for c_i in range(len(cameras[0])):
+        # breakpoint()
+        for c_i in range(len(cameras[0][:1] if dataset_name == 'spaces' else [1])):
             
             if dataset_name == 'spaces':
-                mvp_list = [o[c_i].camera.c_f_w for o in cameras[:]]
-                intrinsics_list = [o[c_i].camera.intrinsics for o in cameras[:]]
-                gt_path = [scene_path+c[c_i]['relative_path'] for c in scene_params]
-                p_ratio_list = [c[c_i]['pixel_aspect_ratio'] for c in scene_params]
-            
+                mvp_list = [o.camera.c_f_w for o in cameras[c_i][:8]]
+                # intrinsics_list = [o[c_i].camera.intrinsics for o in cameras[:]]
+                intrinsics_list = [o.camera.intrinsics for o in cameras[c_i][:8]]
+                # gt_path = [scene_path+c[c_i]['relative_path'] for c in scene_params]
+                gt_path = [scene_path+c['relative_path'] for c in scene_params[c_i][:8]]
+                p_ratio_list = [c['pixel_aspect_ratio'] for c in scene_params[c_i][:8]]
+            else:
+                mvp_list = [o.camera.w_f_c for o in cameras]
+                intrinsics_list = [o.camera.intrinsics for o in cameras]
+                gt_path = [c['relative_path'] for c in scene_params]
+                p_ratio_list = [c['pixel_aspect_ratio'] for c in scene_params]
+
+            # breakpoint()
+            if dataset_name == 'dualpixels':
+                for i, gt_name in enumerate(gt_path):
+                    if 'center' in gt_name:
+                        reference_frame = i
             parallax = ParallaxInpainting(
                         rgb_dir = 'images/color.png',
                         depth_max_dim=depth_max_dim,
@@ -63,7 +95,7 @@ def compute_dqmesh_results(
             parallax.reproject_mesh(intrinsics_list[0])
             
             if save_mesh_path is not None:
-                parallax.save_mesh('OURS/')
+                parallax.save_mesh('./')
 
 
             parallax.renderMVP(
@@ -71,20 +103,26 @@ def compute_dqmesh_results(
                 intrinsics_list, 
                 p_ratio=p_ratio_list,
                 frames_path=camera_frames_path)
-            break
-        break
+            # breakpoint()
+            # break
+        # break
 
-def compute_metrics_dataset(frames_path, dataset_name='spaces'):
+            
+
+
+def compute_metrics_dataset(frames_path, dataset_name='dualpixels'):
     
     if dataset_name == 'spaces':
-        data_path = './../datasets/spaces_dataset/data/800/'
+        data_path = './datasets/spaces_dataset/data/800/'
+    else:
+        data_path = './datasets/DP/test/'
     os.makedirs(frames_path, exist_ok=True)
     
     pipeline_params = {}
     pipeline_params['d_max_dim'] = 640
-    pipeline_params['block_size'] = 16
+    pipeline_params['block_size'] = 8
     pipeline_params['render_res']  = 720
-    pipeline_params['reference_frame'] = 6
+    pipeline_params['reference_frame'] = 0
 
     frames_output_path = os.path.join(frames_path, 'rendered')
     os.makedirs(frames_output_path, exist_ok=True)
@@ -96,3 +134,66 @@ def compute_metrics_dataset(frames_path, dataset_name='spaces'):
 
 if __name__ == "__main__":
     compute_metrics_dataset('./output_frames/')
+
+# def compute_tmpi_results(
+#         data_path,
+#         frames_output_path,
+#         gts_resized_path,
+#         pipeline_params,
+#         dataset_name='spaces',
+#         save_mesh_path=None
+# ):
+#     depth_max_dim = pipeline_params['d_max_dim'] # 640
+#     block_size = pipeline_params['block_size'] # 16
+#     render_res = pipeline_params['render_res']  # 720
+#     reference_frame = pipeline_params['reference_frame'] # 0
+    
+#     model = tmpi.TMPI(num_planes=4)
+#     model_file = 'TMPI/weights/mpti_04.pth'                                
+#     model.load_state_dict( torch.load(  model_file, weights_only=False) ) 
+    
+#     if dataset_name == 'spaces':
+#         data_infos_list = get_spaces_dataset_infos(data_path)
+#     for scene_infos in tqdm(data_infos_list[:10]):
+        
+#         cameras, scene_params, scene_path, scene_name = scene_infos
+#         # breakpoint()
+#         for c_i in range(len(cameras[0][:1])):
+            
+#             if dataset_name == 'spaces':
+#                 mvp_list = [o.camera.c_f_w for o in cameras[c_i][:8]]
+#                 # intrinsics_list = [o[c_i].camera.intrinsics for o in cameras[:]]
+#                 intrinsics_list = [o.camera.intrinsics for o in cameras[c_i][:8]]
+#                 # gt_path = [scene_path+c[c_i]['relative_path'] for c in scene_params]
+#                 gt_path = [scene_path+c['relative_path'] for c in scene_params[c_i][:8]]
+#                 p_ratio_list = [c['pixel_aspect_ratio'] for c in scene_params[c_i][:8]]
+            
+#             if h >= w and h >= config.imgsz_max:
+#                 h_scaled, w_scaled = 1024, int(1024 / h * w)
+#             elif w > h and w >= config.imgsz_max:
+#                 h_scaled, w_scaled = int(1024 / w * h), 1024
+#             else:
+#                 h_scaled, w_scaled = h, w
+            
+            
+#             src_rgb = gt_path[reference_frame]
+#             src_disp = dimas_inference(gt_path[reference_frame])
+#             K = intrinsics_list[0]
+#             tile_sz = int(np.clip(utils.next_power_of_two(0.125 * w_scaled - 1), a_min=64, a_max=256))
+#             pad_sz = int(tile_sz * 0.125)
+#             src_disp_tiles, src_rgb_tiles, K_tiles, sx, sy = metric_utils.tiles(src_disp, src_rgb, K, tile_sz, pad_sz)
+
+#             mpis, mpi_disp = model( src_rgb_tiles, src_disp_tiles, src_rgb, src_disp)
+            
+#             h, w = src_rgb.shape[-2:]
+#             renderer = TMPIRendererGL(h, w)
+#             tgt_rgb_syn = renderer( mpis.cpu(), mpi_disp.cpu(), poses, cam_int, sx, sy)
+#             breakpoint()
+#             scene_frames_path = os.path.join(frames_output_path,scene_name)
+#             os.makedirs(scene_frames_path, exist_ok=True)
+#             camera_frames_path = os.path.join(scene_frames_path,str(c_i)) 
+#             os.makedirs(camera_frames_path, exist_ok=True)
+#             scene_gts_path = os.path.join(gts_resized_path, scene_name)
+#             os.makedirs(scene_gts_path, exist_ok=True)
+#             camera_gts_path = os.path.join(scene_gts_path,str(c_i)) 
+#             os.makedirs(camera_gts_path, exist_ok=True)

@@ -284,7 +284,7 @@ class TextureRenderer:
         extra_row = np.array([[0.0,0.0,0.0,1.0]])
         for i, mvp in enumerate(view_list):
             # breakpoint()
-            self.getPerspectiveMatrix(ratio=p_ratio[i],intrinsics=intrinsics[i])
+            self.getPerspectiveMatrix(ratio=p_ratio[0],intrinsics=intrinsics[0])
             if mvp.shape[-1] < 4:
                 view = np.concatenate([mvp, extra_row], axis=0)
             else:

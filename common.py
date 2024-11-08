@@ -42,7 +42,7 @@ def LoadShaders(vertex_file_path,fragment_file_path):
 		# alternatively you could use fr.readlines() and then join in to a single string 
 
 	# Compile Vertex Shader
-	print("Compiling shader: %s"%(vertex_file_path))
+	# print("Compiling shader: %s"%(vertex_file_path))
 	glShaderSource(VertexShaderID, VertexShaderCode)
 	glCompileShader(VertexShaderID)
 
@@ -52,7 +52,7 @@ def LoadShaders(vertex_file_path,fragment_file_path):
 		raise RuntimeError(glGetShaderInfoLog(VertexShaderID))
 
 	# Compile Fragment Shader
-	print("Compiling shader: %s"%(fragment_file_path))
+	# print("Compiling shader: %s"%(fragment_file_path))
 	glShaderSource(FragmentShaderID,FragmentShaderCode)
 	glCompileShader(FragmentShaderID)
 
@@ -64,7 +64,7 @@ def LoadShaders(vertex_file_path,fragment_file_path):
 
 
 	# Link the program
-	print("Linking program")
+	# print("Linking program")
 	ProgramID = glCreateProgram()
 	glAttachShader(ProgramID, VertexShaderID)
 	glAttachShader(ProgramID, FragmentShaderID)

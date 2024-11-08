@@ -6,7 +6,7 @@ import cv2
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 import sys
-
+from tqdm import tqdm
 
 def load_image(image_path, invert=False):
     image = cv2.imread(image_path) 
@@ -15,8 +15,8 @@ def load_image(image_path, invert=False):
 
     # crop de 20% das regioes de borda (jampani et al)
     h, w, _ = image.shape
-    crop_h = int(h * 0.1)
-    crop_w = int(w * 0.1)
+    crop_h = int(h * 0.2)
+    crop_w = int(w * 0.2)
     
     image = image[crop_h:h-crop_h, crop_w:w-crop_w]
     #image = cv2.resize(image, (256, 256), interpolation=cv2.INTER_LINEAR)
@@ -38,7 +38,16 @@ def calculate_ssim(image1, image2):
     image1 = image1.squeeze().permute(1, 2, 0).numpy()
     image2 = image2.squeeze().permute(1, 2, 0).numpy()
     #print(image1.shape)
-    ssim_value, _ = ssim(image1, image2, channel_axis=2, full=True, win_size=9, data_range=1.0)
+    ssim_value, _ = ssim(
+        image1, 
+        image2, 
+        channel_axis=2, 
+        full=True, 
+        win_size=9, 
+        data_range=1.0,
+        gaussian_weights=True,
+        sigma=1.5,
+        use_sample_covariance=False)
     return ssim_value
 
 # calcular psnr
@@ -59,7 +68,7 @@ def process_directory(original_dir, rendered_dir, lpips_model):
     original_scenes = sorted(os.listdir(original_dir))
     rendered_scenes = sorted(os.listdir(rendered_dir))
     
-    for original_img_scene, rendered_img_scene in zip(original_scenes, rendered_scenes):
+    for original_img_scene, rendered_img_scene in tqdm(zip(original_scenes, rendered_scenes)):
         original_scene_path = os.path.join(original_dir, original_img_scene)
         rendered_scene_path = os.path.join(rendered_dir, rendered_img_scene)
 
@@ -70,18 +79,18 @@ def process_directory(original_dir, rendered_dir, lpips_model):
             rendered_camera_path = os.path.join(rendered_scene_path, rendered_img_camera)
             original_images = sorted(os.listdir(original_camera_path))
             rendered_images = sorted(os.listdir(rendered_camera_path))
+            # breakpoint()
             # carregar imagens
             for original_img_name, rendered_img_name in zip(original_images, rendered_images):
                 original_img_path = os.path.join(original_camera_path, original_img_name)
                 rendered_img_path = os.path.join(rendered_camera_path, rendered_img_name)
-                # breakpoint()
                 original_img = load_image(original_img_path)
                 rendered_img = load_image(rendered_img_path)
 
                 lpips_values.append(calculate_lpips(original_img, rendered_img, lpips_model))
                 ssim_values.append(calculate_ssim(original_img, rendered_img))
                 psnr_values.append(calculate_psnr(original_img, rendered_img))
-        
+                # breakpoint()
     return lpips_values, ssim_values, psnr_values
 
 # funcao principal para processar todo o dataset e calcular metricas medias
@@ -130,3 +139,34 @@ def save_results(mean_lpips, mean_ssim, mean_psnr, mesh_type, dataset_name):
 def compute_metrics(dataset_dir, mesh_type, dataset_name):
     mean_lpips, mean_ssim, mean_psnr = process_dataset(dataset_dir)
     save_results(mean_lpips, mean_ssim, mean_psnr, mesh_type, dataset_name)
+
+def tiles(src_disp, src_rgb, K, tile_sz, pad_sz):
+
+    bs, _, h, w = src_disp.shape
+    K_, sx_, sy_, dmap_, rgb_ = [], [], [], [], []
+
+    sy = torch.arange(0, h, tile_sz - pad_sz)
+    sx = torch.arange(0, w, tile_sz - pad_sz)
+
+    src_disp = F.pad(src_disp, (0, tile_sz, 0, tile_sz), 'replicate') 
+    src_rgb = F.pad(src_rgb, (0, tile_sz, 0, tile_sz), 'replicate') 
+
+    K_, src_disp_, src_rgb_,  sx_, sy_ = [], [], [], [], []
+    for y in sy:
+        for x in sx:
+            l, r, t, b = x, x + tile_sz, y, y + tile_sz
+            Ki = K.clone()
+            Ki[:, 0, 2] = Ki[:, 0, 2] - x
+            Ki[:, 1, 2] = Ki[:, 1, 2] - y
+
+            K_.append(Ki)
+            src_disp_.append( src_disp[:, :, t:b, l:r] )
+            src_rgb_.append( src_rgb[:, :, t:b, l:r] )
+            sx_.append(x)
+            sy_.append(y)
+
+    src_rgb_ = torch.stack(src_rgb_, 1)
+    src_disp_ = torch.stack(src_disp_, 1)
+    K_ = torch.stack(K_, 1)
+    sx_, sy_ = torch.tensor(sx_).unsqueeze(0).expand(bs, -1), torch.tensor(sy_).unsqueeze(0).expand(bs, -1)
+    return src_disp_, src_rgb_, K_, sx_, sy_
