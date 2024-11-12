@@ -1,4 +1,5 @@
 from renderTexture import TextureRenderer
+from renderSLIDEMesh import SLIDEMeshRenderer
 import numpy as np
 import cv2
 import torch
@@ -28,6 +29,7 @@ import math
 # import trimesh
 import open3d as o3d
 
+from inpainting_Inference.inpainting_inference import lamaSep_inf
 
 def depth_based_soft_foreground_pixel_visibility_map(depth: np.ndarray) -> np.ndarray:
     """
@@ -47,6 +49,51 @@ def depth_based_soft_foreground_pixel_visibility_map(depth: np.ndarray) -> np.nd
     pixel_visibility_map = np.exp(-beta * np.square(sobel_gradient))
     return pixel_visibility_map
 
+
+def normalize_array(arr: np.ndarray) -> np.ndarray:
+    """
+    Normalize array to range [0, 1].
+
+    Args:
+        arr: Numpy array
+
+    Returns:
+        arr: Numpy array
+    """
+
+    return (arr - arr.min()) / (arr.max() - arr.min())
+
+def get_3D_image_points(image, depth: np.ndarray) -> np.ndarray:
+    """
+    Get (u, v, z) coordinates of all pixels in image.
+
+    Args:
+        image: RGB image
+        depth: Corresponding depth map for image
+
+    Returns:
+        points: Numpy array of shape (image_height*image_width, 3)
+    """
+
+    image_height, image_width = np.array(image).shape[:2]
+
+    points = np.zeros((image_height * image_width, 3))
+
+    x = np.arange(0, image_width, 1)
+    y = np.arange(0, image_height, 1)
+
+    xv, yv = np.meshgrid(x, y)
+    xv = np.expand_dims(xv, 2)
+    yv = np.expand_dims(yv, 2)
+    grid = np.concatenate((yv, xv), axis=2)
+    grid = grid.reshape((image_height * image_width, 2))
+    # breakpoint()
+    points[:, 0] = grid[:, 0]
+    points[:, 1] = grid[:, 1]
+    points[:, 2] = depth[grid[:, 0], grid[:, 1]]
+
+    return points
+
 def reproject_3d_int_detail(verts, W, H, k_00, k_02, k_11, k_12, w_offset, h_offset):
     sx, sy, z = W*(verts[:,0]+1.0)/2.0, H*(verts[:,1]+1.0)/2.0, verts[:,2]
     z = -1. / np.maximum(z, 0.05)
@@ -63,7 +110,10 @@ class ParallaxInpainting:
                  render_res=640,
                  block_size = 16,
                  depth_type='dimas',
-                 debug=False
+                 inpaint_type='lamaSep',
+                 pipeline='slide',
+                 debug=False,
+                 tex_scale=3
                  ):
         self.rgb_dir = rgb_dir
         self.depth_max_dim = depth_max_dim
@@ -71,6 +121,9 @@ class ParallaxInpainting:
         self.block_size = block_size
         self.blocks_per_dim = depth_max_dim//block_size
         self.depth_type = depth_type
+        self.inpaint_type = inpaint_type
+        self.pipeline = pipeline
+        self.tex_scale = tex_scale
         self.debug = debug
 
         self.soft_dis = None
@@ -93,7 +146,11 @@ class ParallaxInpainting:
 
         dim = self.width if self.width > self.height else self.height
         self.dim = (dim, dim)
-        self.tex_dim = (3*self.width,3*self.height)
+        if self.pipeline == 'DQMesh':
+            self.tex_dim = (self.tex_scale*dim,self.tex_scale*dim)
+        else:
+            self.tex_dim = (dim,dim)
+            
 
 
     def load_depth_and_canny(self, color=None, debug=True):
@@ -120,8 +177,8 @@ class ParallaxInpainting:
 
         depth_res_c = cv2.resize((img_depth*255).astype(np.uint8), dsize=self.dim, interpolation=cv2.INTER_CUBIC)
         kernel = np.ones((3, 3), 'uint8')
-        b_d  = cv2.erode(depth_res_c, kernel, iterations=2)
-        b_d = cv2.GaussianBlur(b_d, (3,3),0)
+        # b_d  = cv2.erode(depth_res_c, kernel, iterations=2)
+        b_d = cv2.GaussianBlur(depth_res_c, (3,3),0)
         # depth_res_c = b_d
 
 
@@ -134,21 +191,21 @@ class ParallaxInpainting:
         """=========================================================="""
 
 
-        img_depth_canny = cv2.Canny(b_d, 50, 70, L2gradient=True)
+        img_depth_canny = cv2.Canny(b_d, 30, 70, L2gradient=True)
         pre_filter_canny = img_depth_canny
         img_depth_canny = self.filter_canny(img_depth_canny)
 
 
 
-        dilated_canny = cv2.dilate(img_depth_canny, kernel, iterations=1)
+        # dilated_canny = cv2.dilate(img_depth_canny, kernel, iterations=1)
 
-        dilated_d = cv2.dilate(depth_res_c, kernel, iterations=2)
-        erode_d = cv2.erode(depth_res_c, kernel, iterations=2)
-        depth_res_c[dilated_canny==255] = erode_d[dilated_canny==255]
-        depth_res_c[img_depth_canny==255] = dilated_d[img_depth_canny==255]
-        dilated_d = cv2.dilate(depth_res_c, kernel, iterations=1)
-        erode_d  = cv2.erode(dilated_d, kernel, iterations=1)
-        depth_res_c = erode_d
+        # dilated_d = cv2.dilate(depth_res_c, kernel, iterations=2)
+        # erode_d = cv2.erode(depth_res_c, kernel, iterations=2)
+        # depth_res_c[dilated_canny==255] = erode_d[dilated_canny==255]
+        # depth_res_c[img_depth_canny==255] = dilated_d[img_depth_canny==255]
+        # dilated_d = cv2.dilate(depth_res_c, kernel, iterations=1)
+        # # erode_d  = cv2.erode(dilated_d, kernel, iterations=1)
+        # depth_res_c = dilated_d
 
         if debug:
             cv2.imwrite('depth_res_c.png', cv2.applyColorMap(depth_res_c, cv2.COLORMAP_INFERNO))
@@ -215,7 +272,7 @@ class ParallaxInpainting:
 
         background_mesh_verts(canny_buf, depth_buf, self.block_size, I_merge_mask, IB_verts_buf, IB_uvs_buf)
         background_mesh_faces(IB_verts_buf, IB_uvs_buf, back_verts_buf, back_uvs_buf, back_faces_buf)
-
+        
         """=============FOREGROUND MESH==========="""
         out_f_shape     = (total_blocks, max_faces_block, 3)
         out_Nf_shape    = (total_blocks)
@@ -223,6 +280,10 @@ class ParallaxInpainting:
         P_faces_buf     = np.zeros(out_f_shape, dtype=np.int32)
         P_Nfaces_buf    = np.zeros(out_Nf_shape, dtype=np.int32)
         I_Vlabels_buf   = np.zeros(out_limg_shape, dtype=np.int32)
+
+        # if self.block_size == 4:
+        #     from mmodules.foreground_mesh_gen_split4.foreground_mesh_verts_module import pforeground_mesh_verts, pforeground_mesh_faces
+        
 
         pforeground_mesh_verts(canny_buf, depth_buf, self.block_size, P_faces_buf, P_Nfaces_buf, I_Vlabels_buf)
 
@@ -234,6 +295,7 @@ class ParallaxInpainting:
         pforeground_mesh_faces(depth_buf, P_faces_buf, I_Vlabels_buf, back_verts_buf.shape[1], self.block_size, fore_verts_buf, fore_uvs_buf, fore_faces_buf)
         
         back_verts_buf = back_verts_buf.T
+        back_verts_buf[:,-1] = back_verts_buf[:,-1] - 0.01
         back_uvs_buf = back_uvs_buf.T
         back_faces_buf = back_faces_buf.T
     
@@ -256,11 +318,15 @@ class ParallaxInpainting:
         inp_M = cv2.resize(np.repeat(np.expand_dims(inp_M, -1), 3, axis=-1), dsize=self.tex_dim, interpolation = cv2.INTER_NEAREST)
         back_mask = cv2.resize(np.repeat(np.expand_dims(back_mask, -1), 3, axis=-1), dsize=self.tex_dim, interpolation = cv2.INTER_NEAREST)
        
-        inp_M = cv2.dilate(inp_M, kernel, iterations=2)
+        inp_M = cv2.dilate(inp_M, kernel, iterations=4)
 
         # DO INPAITING W/ inp_M
-        inpaint_func = SimpleLama(device="cuda")
-        img_inp = inpaint_func(self.color_res, inp_M[:,:,0])
+        if self.inpaint_type == 'lama' :
+            inpaint_func = SimpleLama(device="cuda")
+            img_inp = inpaint_func(self.color_res, inp_M[:,:,0])
+        else:
+            img_inp = lamaSep_inf(self.color_res, inp_M[:,:,:1])
+
         img_inp = np.array(img_inp)
         cv2.imwrite("big_mask.png", inp_M)
     
@@ -273,10 +339,12 @@ class ParallaxInpainting:
         # back_tex = np.concatenate((back_tex, alpha), axis=-1)
         cv2.imwrite(self.back_tex_path, back_tex)
 
+        depth_buf = cv2.dilate(depth_buf,kernel, iterations=1)
         alpha = depth_based_soft_foreground_pixel_visibility_map(depth_buf/depth_buf.max())
         alpha = cv2.erode(alpha,kernel,iterations=1)
+        alpha = (alpha>0.1).astype('int32')
         alpha = (255*((alpha-alpha.min())/(alpha.max()-alpha.min()))).astype(np.uint8)
-   
+        
         alpha = cv2.resize(alpha, dsize=self.tex_dim, interpolation=cv2.INTER_CUBIC)
         alpha = np.expand_dims(alpha, axis=-1)
         fore_tex = np.concatenate((self.color_res, alpha), axis=-1)
@@ -285,6 +353,111 @@ class ParallaxInpainting:
         # fore_tex = np.concatenate((self.color_res, alpha), axis=-1)
         cv2.imwrite(self.fore_tex_path, fore_tex)
 
+    def direct_mesh(self, color=None):
+        self.load_depth_and_canny(color=color, debug=True)
+
+        """=============TEXTURES=============="""
+        self.img_depth = cv2.resize(self.img_depth, dsize=self.tex_dim)
+        kernel = np.ones((3, 3), 'uint8')
+
+        inp_M = (self.soft_dis>0)
+        inp_M = 255*inp_M.astype(np.uint8)
+        inp_M = cv2.resize(np.repeat(np.expand_dims(inp_M, -1), 3, axis=-1), dsize=self.tex_dim, interpolation = cv2.INTER_NEAREST)
+       
+        inp_M = cv2.dilate(inp_M, kernel, iterations=4)
+        cv2.imwrite("big_mask.png", inp_M)
+
+        # DO INPAITING W/ inp_M
+        if self.inpaint_type == 'lama' :
+            inpaint_func = SimpleLama(device="cuda")
+            img_inp = np.array(inpaint_func(self.color_res, inp_M[:,:,0]))
+            depth_inp = np.array(inpaint_func(self.img_depth, inp_M[:,:,0]))
+        else:
+            img_inp = lamaSep_inf(self.color_res, inp_M[:,:,:1])
+            depth_inp = lamaSep_inf(self.img_depth, inp_M[:,:,0])
+    
+
+        back_tex = ((inp_M/255)*img_inp + (1 - (inp_M/255))*self.color_res).astype(np.uint8)
+        back_alpha = 255*np.ones_like(back_tex)[:, :, :1]
+        # back_tex = np.concatenate((cv2.cvtColor(back_tex,cv2.COLOR_RGB2BGR), back_alpha), axis=-1)
+        back_tex = np.concatenate((back_tex, back_alpha), axis=-1)
+        self.back_tex_path = 'images/back_tex.png'
+        cv2.imwrite(self.back_tex_path, back_tex)
+
+        alpha = depth_based_soft_foreground_pixel_visibility_map(self.img_depth[:,:,0]/self.img_depth.max())
+        # alpha = cv2.erode(alpha,kernel,iterations=2)
+        alpha = (255*((alpha-alpha.min())/(alpha.max()-alpha.min()))).astype(np.uint8)
+   
+        alpha = cv2.resize(alpha, dsize=self.tex_dim, interpolation=cv2.INTER_CUBIC)
+        alpha = np.expand_dims(alpha, axis=-1)
+        fore_tex = np.concatenate((self.color_res, alpha), axis=-1)
+        self.fore_tex_path = 'images/fore_tex.png'
+        # fore_tex = np.concatenate((cv2.cvtColor(self.color_res,cv2.COLOR_RGB2BGR), alpha), axis=-1)
+        fore_tex = np.concatenate((self.color_res, alpha), axis=-1)
+        cv2.imwrite(self.fore_tex_path, fore_tex)
+
+
+        
+        """===============================Background Mesh================================"""
+        points = get_3D_image_points(back_tex, depth_inp[:,:,0]/self.img_depth.max())
+        back_points_uv = points[:, :2].astype(np.int32).copy()
+        back_colors = np.asarray(back_tex)[back_points_uv[:, 0], back_points_uv[:, 1]]
+        # alpha = back_alpha[back_points_uv[:, 0], back_points_uv[:, 1]]/255
+
+        # Normalize points and colors.
+        back_points = np.zeros_like(points)
+        back_points[:, 0] = 2*normalize_array(points[:, 1]) - 1
+        back_points[:, 1] = 2*normalize_array(points[:, 0]) - 1
+        back_points[:, 2] = normalize_array(points[:, 2]) - 0.1
+        back_points = back_points.astype('float32')
+        back_colors = normalize_array(back_colors).astype('float32')
+        back_faces = []
+        v_idx = 0
+        for i in range(self.img_depth.shape[0]-1):
+            for j in range(self.img_depth.shape[1]-1):
+                v0 = i*self.img_depth.shape[1] + j + v_idx
+                v1 = i*self.img_depth.shape[1] + (j+1) + v_idx
+                v2 = (i+1)*self.img_depth.shape[1] + j+ v_idx
+                v3 = (i+1)*self.img_depth.shape[1] + (j+1) + v_idx
+                back_faces.append([v0,v1,v3])
+                back_faces.append([v0,v2,v3])
+
+        """===============================Foreground Mesh================================"""
+        points = get_3D_image_points(self.color_res, self.img_depth[:,:,0]/self.img_depth.max())
+        fore_points_uv = points[:, :2].astype(np.int32).copy()
+        fore_colors = np.asarray(fore_tex)[fore_points_uv[:, 0], fore_points_uv[:, 1]]
+        # alpha = alpha[fore_points_uv[:, 0], fore_points_uv[:, 1]]/255
+
+        # Normalize points and colors.
+        fore_points = np.zeros_like(points)
+        fore_points[:, 0] = 2*normalize_array(points[:, 1])-1
+        fore_points[:, 1] = 2*normalize_array(points[:, 0])-1
+        fore_points[:, 2] = normalize_array(points[:, 2])
+        fore_points = fore_points.astype('float32')
+        fore_colors = normalize_array(fore_colors).astype('float32')
+        fore_faces = []
+        v_idx = back_points.shape[0]
+        for i in range(self.img_depth.shape[0]-1):
+            for j in range(self.img_depth.shape[1]-1):
+                v0 = i*self.img_depth.shape[1] + j + v_idx
+                v1 = i*self.img_depth.shape[1] + (j+1) + v_idx
+                v2 = (i+1)*self.img_depth.shape[1] + j+ v_idx
+                v3 = (i+1)*self.img_depth.shape[1] + (j+1) + v_idx
+                fore_faces.append([v0,v1,v3])
+                fore_faces.append([v0,v2,v3])
+
+        self.all_verts = np.concatenate((back_points, fore_points), axis=0)
+        self.all_colors = np.concatenate((back_colors, fore_colors), axis=0)
+        self.fore_faces = np.array(fore_faces, dtype='int32')
+        self.back_faces = np.array(back_faces, dtype='int32')
+        self.all_uvs = None
+
+        # total_faces = np.concatenate((self.back_faces, self.fore_faces), axis=0)
+        # mesh = o3d.geometry.TriangleMesh()
+        # mesh.vertices = o3d.utility.Vector3dVector(torch.from_numpy(self.all_verts))
+        # mesh.vertex_colors = o3d.utility.Vector3dVector(torch.from_numpy(self.all_colors[:,:-1]))
+        # mesh.triangles = o3d.utility.Vector3iVector(torch.from_numpy(self.fore_faces))
+        # o3d.io.write_triangle_mesh("slide_mesh.obj", mesh)
     
     def save_mesh(self, out_dir):
         total_faces = np.concatenate((self.back_faces, self.fore_faces), axis=0)
@@ -346,13 +519,18 @@ class ParallaxInpainting:
             h_offset=h_offset
         )
         self.all_verts[:,-1] *= -1
-        self.all_verts[:,0] *= -1
-        # self.all_verts[:,1] *= -1
+        if self.pipeline == 'DQMesh':
+            self.all_verts[:,0] *= -1
+        else:
+            self.all_verts[:,1] *= -1
 
     def list_generate_mesh(self, gt_list, ref_frame_index: int = 0, save_gts_path=None):
         
         img = np.array(cv2.imread(gt_list[ref_frame_index]))
-        self.halide_mesh(color=img)
+        if self.pipeline == 'DQMesh':
+            self.halide_mesh(color=img)
+        else:
+            self.direct_mesh(color=img)
 
         self.save_gts_path = save_gts_path
         self.gt_list = gt_list
@@ -363,7 +541,6 @@ class ParallaxInpainting:
             get_screenshot = True
         else:
             get_screenshot = False
-
         W_2 = int(2*intrinsics[0][0,2])
         H_2 = int(2*intrinsics[0][1,2])
         if self.save_gts_path is not None:
@@ -374,23 +551,40 @@ class ParallaxInpainting:
                 frame_name = str(i)
                 gt_rs_path = os.path.join(self.save_gts_path, (4-len(frame_name))*"0"+frame_name+'.jpg')
                 cv2.imwrite(gt_rs_path, gt_img)
-        render = TextureRenderer(
+        if self.pipeline=='DQMesh':
+            render = TextureRenderer(
+                                height=int(H_2),
+                                width= int(W_2),
+                                vertices=self.all_verts.reshape(-1),
+                                uv_coords=self.all_uvs.reshape(-1),
+                                indices=self.fore_faces.reshape(-1),
+                                indices_back=self.back_faces.reshape(-1),
+                                img_file=self.fore_tex_path,
+                                img_file_back=self.back_tex_path,
+                                texture_dims=self.tex_dim,
+                                frames_path=frames_path)
+            render.runMVP(
+                poses,
+                intrinsics,
+                p_ratio=1.0 if p_ratio is None else p_ratio, 
+                get_screenshot=get_screenshot
+            )
+        else:
+            total_faces = np.concatenate((self.back_faces, self.fore_faces), axis=0)
+            render = SLIDEMeshRenderer(
                              height=int(H_2),
-                             width= int(W_2),
+                             width=int(W_2),
                              vertices=self.all_verts.reshape(-1),
-                             uv_coords=self.all_uvs.reshape(-1),
-                             indices=self.fore_faces.reshape(-1),
-                             indices_back=self.back_faces.reshape(-1),
-                             img_file=self.fore_tex_path,
-                             img_file_back=self.back_tex_path,
-                             texture_dims=self.tex_dim,
+                             colors=self.all_colors.reshape(-1),
+                             indices=total_faces.reshape(-1),
                              frames_path=frames_path)
-        render.runMVP(
-            poses,
-            intrinsics,
-            p_ratio=1.0 if p_ratio is None else p_ratio, 
-            get_screenshot=get_screenshot
-        )
+            render.runMVP(
+                poses,
+                intrinsics,
+                p_ratio=1.0 if p_ratio is None else p_ratio, 
+                get_screenshot=get_screenshot
+            )
+
 
 def render_path(num_frames=900, r_x=0.3, r_y=0.3, r_z=0.3):
     t = torch.arange(num_frames) / (num_frames - 1)

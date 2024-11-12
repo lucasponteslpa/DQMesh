@@ -32,7 +32,7 @@ def dimas_inference(img_path, img_rgb=None, out_path=None, do_crop = False, crop
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # Construct the full path to the model file
-    model_path = os.path.join(script_dir, 'tf_model', 'ckp_75.tflite')
+    model_path = os.path.join(script_dir, 'tf_model', 'dimas_512x512.tflite')
     #model_path = "tf_model/midas_model.tflite"
     interpreter = tf.lite.Interpreter(model_path=model_path)
 
@@ -42,7 +42,6 @@ def dimas_inference(img_path, img_rgb=None, out_path=None, do_crop = False, crop
 
     # Allocate tensors
     interpreter.allocate_tensors()
-
     # Print the input and output details of the model
     # print()
     # print("Input details:")

@@ -8,6 +8,8 @@ from spaces_dataset import get_scene_list
 import torch
 from tqdm import tqdm
 
+import pandas as pd
+
 import metric_utils
 
 from parallax_inpainting_new import ParallaxInpainting
@@ -45,17 +47,19 @@ def compute_dqmesh_results(
 ):
     depth_max_dim = pipeline_params['d_max_dim'] # 640
     block_size = pipeline_params['block_size'] # 16
-    render_res = pipeline_params['render_res']  # 720
     reference_frame = pipeline_params['reference_frame'] # 0
+    inpaint = pipeline_params['inpaint']
+    depth = pipeline_params['depth']
+    tex_scale = pipeline_params['tex_scale']
+    pipe_name = pipeline_params['pipe_name']
 
     if dataset_name == 'spaces':
         data_infos_list = get_spaces_dataset_infos(data_path)
     else:
         data_infos_list = get_dualpixels_dataset_infos(data_path)
-    for scene_infos in tqdm(data_infos_list[:20]):
+    for scene_infos in tqdm(data_infos_list[:]):
         
         cameras, scene_params, scene_path, scene_name = scene_infos
-        # breakpoint()
         for c_i in range(len(cameras[0][:1] if dataset_name == 'spaces' else [1])):
             
             if dataset_name == 'spaces':
@@ -80,7 +84,10 @@ def compute_dqmesh_results(
                         rgb_dir = 'images/color.png',
                         depth_max_dim=depth_max_dim,
                         block_size=block_size,
-                        render_res=render_res)
+                        depth_type = depth,
+                        inpaint_type = inpaint,
+                        pipeline=pipe_name,
+                        tex_scale=tex_scale)
             
             scene_frames_path = os.path.join(frames_output_path,scene_name)
             os.makedirs(scene_frames_path, exist_ok=True)
@@ -94,8 +101,8 @@ def compute_dqmesh_results(
             parallax.list_generate_mesh(gt_path, reference_frame, save_gts_path=camera_gts_path)
             parallax.reproject_mesh(intrinsics_list[0])
             
-            if save_mesh_path is not None:
-                parallax.save_mesh('./')
+            # if save_mesh_path is not None:
+            # parallax.save_mesh('./')
 
 
             parallax.renderMVP(
@@ -110,7 +117,7 @@ def compute_dqmesh_results(
             
 
 
-def compute_metrics_dataset(frames_path, dataset_name='dualpixels'):
+def compute_metrics_dataset(frames_path, dataset_name='dualpixels', pipeline='DQMesh'):
     
     if dataset_name == 'spaces':
         data_path = './datasets/spaces_dataset/data/800/'
@@ -118,23 +125,87 @@ def compute_metrics_dataset(frames_path, dataset_name='dualpixels'):
         data_path = './datasets/DP/test/'
     os.makedirs(frames_path, exist_ok=True)
     
-    pipeline_params = {}
-    pipeline_params['d_max_dim'] = 640
-    pipeline_params['block_size'] = 8
-    pipeline_params['render_res']  = 720
-    pipeline_params['reference_frame'] = 0
+    # d_max_dim = [640,640,640,1280,1280,1280]
+    # block_size = [8,16,32,8,16,32]
+    # d_max_dim = [640,1280]
+    # block_size = [8,16]
+    d_max_dim = [1280,1280,1280] if pipeline=='DQMesh' else [1280]
+    block_size = [4,8,16] if pipeline=='DQMesh' else [4]
+    tex_scale = [3,3,3]
+    reference_frame = 0
+    inpaint = ['lamaSep' for _ in range(6) ]
+    depth = ['dimas' for _ in range(6)]
+    final_csv = {
+        'd_max_dim':[],
+        'block_size':[],
+        'inpaint':[],
+        'depth':[],
+        'psnr':[],
+        'ssim':[],
+        'lpips':[],
+        'std_psnr':[],
+        'std_ssim':[],
+        'std_lpips':[],
+    }
 
-    frames_output_path = os.path.join(frames_path, 'rendered')
-    os.makedirs(frames_output_path, exist_ok=True)
-    gts_resized_path = os.path.join(frames_path, 'gts')
-    os.makedirs(gts_resized_path, exist_ok=True)
+    all_metric_values = []
+    for i in range(len(block_size)):
+        pipeline_params = {}
+        pipeline_params['d_max_dim'] = d_max_dim[i]
+        pipeline_params['block_size'] = block_size[i]
+        pipeline_params['reference_frame'] = 0
+        pipeline_params['inpaint'] = inpaint[i]
+        pipeline_params['depth'] = depth[i]
+        pipeline_params['tex_scale'] = tex_scale[i]
+        pipeline_params['pipe_name'] = pipeline
+        
 
-    compute_dqmesh_results(data_path, frames_output_path, gts_resized_path, pipeline_params)
-    metric_utils.compute_metrics(frames_path, 'DQMesh', dataset_name)
+        frames_output_path = os.path.join(frames_path, 'rendered')
+        os.makedirs(frames_output_path, exist_ok=True)
+        gts_resized_path = os.path.join(frames_path, 'gts')
+        os.makedirs(gts_resized_path, exist_ok=True)
+
+        compute_dqmesh_results(data_path, frames_output_path, gts_resized_path, pipeline_params, dataset_name=dataset_name)
+        metrics_dict, metric_values = metric_utils.compute_metrics(frames_path, pipeline, dataset_name)
+
+        final_csv['d_max_dim'] += [pipeline_params['d_max_dim']]
+        final_csv['block_size'] += [pipeline_params['block_size']]
+        final_csv['inpaint'] += [pipeline_params['inpaint']]
+        final_csv['depth'] += [pipeline_params['depth']]
+        final_csv['psnr'] += [metrics_dict['psnr']]
+        final_csv['ssim'] += [metrics_dict['ssim']]
+        final_csv['lpips'] += [metrics_dict['lpips']]
+        final_csv['std_psnr'] += [metrics_dict['std_psnr']]
+        final_csv['std_ssim'] += [metrics_dict['std_ssim']]
+        final_csv['std_lpips'] += [metrics_dict['std_lpips']]
+        all_metric_values += [metric_values]
+        print(metrics_dict)
+    df = pd.DataFrame(final_csv)
+    file_name = f'{pipeline}-{dataset_name}_metrics.csv'
+    df.to_csv(file_name, sep='\t')
+    return all_metric_values
+
+import json
+import numpy as np
+class NumpyTypeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.generic):
+            return obj.item()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return json.JSONEncoder.default(self, obj)
 
 if __name__ == "__main__":
-    compute_metrics_dataset('./output_frames/')
-
+    complete_test_dict = {}
+    complete_test_dict['DQMesh_dualpixels'] = compute_metrics_dataset('./output_frames_dqmesh_dual/')
+    complete_test_dict['DQMesh_spaces'] = compute_metrics_dataset('./output_frames_dqmesh_spaces/', dataset_name='spaces')
+    complete_test_dict['SLIDE_dualpixels'] = compute_metrics_dataset('./output_frames_slide_dual/', pipeline='SLIDE')
+    complete_test_dict['SLIDE_spaces'] = compute_metrics_dataset('./output_frames_slide_spaces/', dataset_name='spaces', pipeline='SLIDE')
+    file_name = "all_tested_metrics.json"
+    # Write the dictionary to a JSON file
+    with open(file_name, 'w') as json_file:
+        a = json.dumps(complete_test_dict, indent=1, cls=NumpyTypeEncoder)
+        json.dump(a, json_file)
 # def compute_tmpi_results(
 #         data_path,
 #         frames_output_path,

@@ -120,11 +120,20 @@ def process_dataset(dataset_dir,frames_name='gts',rendered_name='rendered'):
         all_psnr_values.extend(psnr_values)
     
     # calcular metricas medias
-    mean_lpips = np.mean(all_lpips_values) if all_lpips_values else float('nan')
-    mean_ssim = np.mean(all_ssim_values) if all_ssim_values else float('nan')
-    mean_psnr = np.mean(all_psnr_values) if all_psnr_values else float('nan')
+    # mean_lpips = np.mean(all_lpips_values) if all_lpips_values else float('nan')
+    # mean_ssim = np.mean(all_ssim_values) if all_ssim_values else float('nan')
+    # mean_psnr = np.mean(all_psnr_values) if all_psnr_values else float('nan')
+    # std_lpips = np.std(all_lpips_values) if all_lpips_values else float('nan')
+    # std_ssim = np.std(all_ssim_values) if all_ssim_values else float('nan')
+    # std_psnr = np.std(all_psnr_values) if all_psnr_values else float('nan')
+
+    metric_values ={
+        'psnr': all_psnr_values,
+        'ssim': all_ssim_values,
+        'lpips': all_lpips_values
+    }
     
-    return mean_lpips, mean_ssim, mean_psnr
+    return metric_values
 
 # salvar resultados em um arquivo de texto
 def save_results(mean_lpips, mean_ssim, mean_psnr, mesh_type, dataset_name):
@@ -137,8 +146,16 @@ def save_results(mean_lpips, mean_ssim, mean_psnr, mesh_type, dataset_name):
 
 # ponto de entrada do script
 def compute_metrics(dataset_dir, mesh_type, dataset_name):
-    mean_lpips, mean_ssim, mean_psnr = process_dataset(dataset_dir)
-    save_results(mean_lpips, mean_ssim, mean_psnr, mesh_type, dataset_name)
+    metric_values = process_dataset(dataset_dir)
+    metrics_dict = {}
+    metrics_dict['psnr'] = np.mean(metric_values['psnr'])
+    metrics_dict['ssim'] = np.mean(metric_values['ssim'])
+    metrics_dict['lpips'] = np.mean(metric_values['lpips'])
+    metrics_dict['std_psnr'] = np.std(metric_values['psnr'])
+    metrics_dict['std_ssim'] = np.std(metric_values['ssim'])
+    metrics_dict['std_lpips'] = np.std(metric_values['lpips'])
+    # save_results(mean_lpips, mean_ssim, mean_psnr, mesh_type, dataset_name)
+    return metrics_dict, metric_values
 
 def tiles(src_disp, src_rgb, K, tile_sz, pad_sz):
 
